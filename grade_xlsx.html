@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Answer Key Grader</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root{
+    --paper:#F6F4EC;
+    --paper-raised:#FFFFFF;
+    --ink:#20262B;
+    --ink-soft:#565F66;
+    --rule:#D9D3C2;
+    --teal:#2F6F63;
+    --teal-dark:#1F4B43;
+    --amber:#B8792C;
+    --brick:#A63F2A;
+    --sage:#3F7A52;
+    --focus:#1F4B43;
+  }
+
+  *{ box-sizing:border-box; }
+
+  @media (prefers-reduced-motion: reduce){
+    *{ animation-duration:0.001ms !important; transition-duration:0.001ms !important; }
+  }
+
+  body{
+    margin:0;
+    background:var(--paper);
+    color:var(--ink);
+    font-family:'Inter', system-ui, sans-serif;
+    line-height:1.5;
+    padding:48px 20px 80px;
+  }
+
+  .page{
+    max-width:720px;
+    margin:0 auto;
+  }
+
+  h1{
+    font-family:'Source Serif 4', Georgia, serif;
+    font-weight:700;
+    font-size:clamp(28px, 4vw, 38px);
+    letter-spacing:-0.01em;
+    margin:0 0 6px;
+  }
+
+  .lede{
+    color:var(--ink-soft);
+    font-size:15px;
+    max-width:56ch;
+    margin:0 0 36px;
+  }
+
+  .slots{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:16px;
+    margin-bottom:20px;
+  }
+  @media (max-width:560px){
+    .slots{ grid-template-columns:1fr; }
+  }
+
+  .slot{
+    border:1px solid var(--rule);
+    background:var(--paper-raised);
+    padding:18px;
+    position:relative;
+  }
+  .slot-label{
+    font-family:'Source Serif 4', Georgia, serif;
+    font-weight:600;
+    font-size:14px;
+    color:var(--ink);
+    display:block;
+    margin-bottom:10px;
+  }
+  .drop{
+    border:1px dashed var(--rule);
+    padding:16px 12px;
+    text-align:center;
+    cursor:pointer;
+    transition:border-color .15s ease, background .15s ease;
+  }
+  .drop:hover, .drop.drag{
+    border-color:var(--teal);
+    background:#F0F6F3;
+  }
+  .drop input{ display:none; }
+  .drop .hint{
+    font-size:13px;
+    color:var(--teal-dark);
+    font-weight:500;
+  }
+  .drop .filename{
+    font-family:'IBM Plex Mono', monospace;
+    font-size:12.5px;
+    margin-top:6px;
+    color:var(--ink);
+    word-break:break-all;
+  }
+
+  .options{
+    display:flex;
+    flex-direction:column;
+    gap:12px;
+    padding:14px 0 22px;
+    border-bottom:1px solid var(--rule);
+    margin-bottom:22px;
+    font-size:13.5px;
+  }
+  .opt-field{ display:flex; align-items:center; gap:8px; }
+  .opt-field label{ color:var(--ink-soft); }
+  .opt-field input[type="number"]{
+    width:70px;
+    font-family:'IBM Plex Mono', monospace;
+    font-size:13px;
+    padding:5px 7px;
+    border:1px solid var(--rule);
+    background:var(--paper-raised);
+    color:var(--ink);
+  }
+  .opt-field input[type="number"]:focus,
+  .drop:focus-within{
+    outline:2px solid var(--focus);
+    outline-offset:2px;
+  }
+  .opt-field input[type="checkbox"]{
+    width:15px; height:15px;
+    accent-color:var(--teal);
+    flex:none;
+  }
+  .opt-row{ display:flex; flex-wrap:wrap; gap:20px; }
+
+  button.grade-btn{
+    font-family:'Source Serif 4', Georgia, serif;
+    font-weight:600;
+    font-size:16px;
+    background:var(--teal);
+    color:#fff;
+    border:none;
+    padding:12px 26px;
+    cursor:pointer;
+    transition:background .15s ease, transform .05s ease;
+  }
+  button.grade-btn:hover:not(:disabled){ background:var(--teal-dark); }
+  button.grade-btn:active:not(:disabled){ transform:translateY(1px); }
+  button.grade-btn:disabled{
+    background:#B9C4C1;
+    cursor:not-allowed;
+  }
+  button.grade-btn:focus-visible{
+    outline:2px solid var(--focus);
+    outline-offset:3px;
+  }
+
+  .status-line{
+    margin-top:12px;
+    font-size:13.5px;
+    color:var(--ink-soft);
+    min-height:18px;
+  }
+  .status-line.err{ color:var(--brick); }
+
+  /* ---- results ---- */
+  #results{ margin-top:44px; }
+  .hidden{ display:none; }
+
+  .score-row{
+    display:flex;
+    align-items:center;
+    gap:24px;
+    margin-bottom:8px;
+  }
+
+  .stamp{
+    width:104px;
+    height:104px;
+    border:3px solid currentColor;
+    border-radius:50%;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    flex:none;
+    transform:rotate(-6deg) scale(0.7);
+    opacity:0;
+    animation:stampIn .38s cubic-bezier(.2,1.4,.4,1) forwards;
+  }
+  @keyframes stampIn{
+    to{ transform:rotate(-6deg) scale(1); opacity:1; }
+  }
+  .stamp .num{
+    font-family:'IBM Plex Mono', monospace;
+    font-weight:600;
+    font-size:34px;
+  }
+
+  .score-100{ color:var(--sage); }
+  .score-75{ color:var(--teal); }
+  .score-50{ color:var(--amber); }
+  .score-25{ color:var(--amber); }
+  .score-0{ color:var(--brick); }
+
+  .score-meta h2{
+    font-family:'Source Serif 4', Georgia, serif;
+    font-size:20px;
+    margin:0 0 4px;
+  }
+  .score-meta .ratio{
+    font-family:'IBM Plex Mono', monospace;
+    font-size:13.5px;
+    color:var(--ink-soft);
+  }
+  .score-meta .modes{
+    font-size:12px;
+    color:var(--ink-soft);
+    margin-top:4px;
+  }
+
+  .flags{
+    margin:18px 0 0;
+    padding:0;
+    list-style:none;
+    font-size:13.5px;
+  }
+  .flags li{
+    padding:8px 0;
+    border-top:1px solid var(--rule);
+    color:var(--brick);
+  }
+
+  table.breakdown{
+    width:100%;
+    border-collapse:collapse;
+    margin-top:28px;
+    font-size:13.5px;
+  }
+  table.breakdown caption{
+    text-align:left;
+    font-family:'Source Serif 4', Georgia, serif;
+    font-size:16px;
+    font-weight:600;
+    margin-bottom:10px;
+  }
+  table.breakdown th{
+    text-align:left;
+    font-weight:500;
+    color:var(--ink-soft);
+    border-bottom:1px solid var(--ink);
+    padding:6px 10px 8px 0;
+  }
+  table.breakdown td{
+    padding:10px 10px 10px 0;
+    border-bottom:1px solid var(--rule);
+    vertical-align:top;
+  }
+  table.breakdown tr.sheet-row{ cursor:pointer; }
+  table.breakdown tr.sheet-row:hover{ background:#F0EEE4; }
+  td.num, th.num{ font-family:'IBM Plex Mono', monospace; text-align:right; }
+  .sheet-sub{
+    display:block;
+    font-size:11.5px;
+    color:var(--ink-soft);
+    font-weight:400;
+    margin-top:2px;
+  }
+  .status-pill{
+    font-size:11.5px;
+    padding:2px 8px;
+    border:1px solid currentColor;
+    white-space:nowrap;
+  }
+  .status-ok{ color:var(--sage); }
+  .status-bad{ color:var(--brick); }
+
+  .caret{
+    display:inline-block;
+    margin-right:6px;
+    transition:transform .15s ease;
+  }
+  tr.sheet-row.open .caret{ transform:rotate(90deg); }
+
+  .mismatch-row td{
+    padding:0;
+    border-bottom:1px solid var(--rule);
+  }
+  .mismatch-wrap{
+    padding:4px 0 16px 22px;
+  }
+  .mismatch-wrap ul{
+    margin:0;
+    padding:0;
+    list-style:none;
+    font-family:'IBM Plex Mono', monospace;
+    font-size:12.5px;
+    color:var(--ink-soft);
+  }
+  .mismatch-wrap li{ padding:3px 0; }
+  .mismatch-wrap .more{
+    font-family:'Inter', sans-serif;
+    font-style:italic;
+    padding-top:6px;
+  }
+
+  .download-row{
+    margin-top:24px;
+  }
+  .download-row a{
+    font-size:13.5px;
+    color:var(--teal-dark);
+    text-decoration:none;
+    border-bottom:1px solid var(--teal-dark);
+  }
+  .download-row a:hover{ color:var(--teal); border-color:var(--teal); }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Answer Key Grader</h1>
+  <p class="lede">Load an answer key and a submission. Every expected cell is checked against the submission — the comparison is exact by default, so a stray space or a rounded number counts as wrong unless you allow for it below.</p>
+
+  <div class="slots">
+    <div class="slot">
+      <span class="slot-label">Answer key</span>
+      <div class="drop" id="dropKey" tabindex="0" role="button" aria-label="Choose the answer key file">
+        <input type="file" id="fileKey" accept=".xlsx">
+        <div class="hint" id="hintKey">Click or drop .xlsx file</div>
+        <div class="filename" id="nameKey"></div>
+      </div>
+    </div>
+    <div class="slot">
+      <span class="slot-label">Submission</span>
+      <div class="drop" id="dropSub" tabindex="0" role="button" aria-label="Choose the submission file">
+        <input type="file" id="fileSub" accept=".xlsx">
+        <div class="hint" id="hintSub">Click or drop .xlsx file</div>
+        <div class="filename" id="nameSub"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="options">
+    <div class="opt-row">
+      <div class="opt-field">
+        <label for="tolerance">Numeric tolerance</label>
+        <input type="number" id="tolerance" value="0" min="0" step="0.001">
+      </div>
+      <div class="opt-field">
+        <input type="checkbox" id="penalizeExtra">
+        <label for="penalizeExtra">Count unexpected extra sheets against the score</label>
+      </div>
+    </div>
+    <div class="opt-row">
+      <div class="opt-field">
+        <input type="checkbox" id="ignoreSheetNames">
+        <label for="ignoreSheetNames">Ignore sheet names — match sheets by their order in the file instead</label>
+      </div>
+    </div>
+    <div class="opt-row">
+      <div class="opt-field">
+        <input type="checkbox" id="ignoreRowOrder">
+        <label for="ignoreRowOrder">Ignore row order — a row counts as correct if it exists anywhere in the sheet</label>
+      </div>
+    </div>
+  </div>
+
+  <button class="grade-btn" id="gradeBtn" disabled>Grade submission</button>
+  <div class="status-line" id="statusLine"></div>
+
+  <div id="results" class="hidden">
+    <div class="score-row">
+      <div class="stamp" id="stamp"><span class="num" id="scoreNum">0</span></div>
+      <div class="score-meta">
+        <h2 id="scoreHeadline">Score</h2>
+        <div class="ratio" id="scoreRatio"></div>
+        <div class="modes" id="scoreModes"></div>
+      </div>
+    </div>
+    <ul class="flags" id="flags"></ul>
+
+    <table class="breakdown" id="breakdownTable">
+      <caption>Per-sheet breakdown</caption>
+      <thead>
+        <tr>
+          <th>Sheet</th>
+          <th class="num">Correct</th>
+          <th class="num">Match</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="breakdownBody"></tbody>
+    </table>
+
+    <div class="download-row">
+      <a href="#" id="downloadReport">Download full report (.txt)</a>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  let keyWorkbook = null;
+  let subWorkbook = null;
+
+  const fileKey = document.getElementById('fileKey');
+  const fileSub = document.getElementById('fileSub');
+  const dropKey = document.getElementById('dropKey');
+  const dropSub = document.getElementById('dropSub');
+  const nameKey = document.getElementById('nameKey');
+  const nameSub = document.getElementById('nameSub');
+  const gradeBtn = document.getElementById('gradeBtn');
+  const statusLine = document.getElementById('statusLine');
+  const results = document.getElementById('results');
+
+  function wireDrop(dropEl, inputEl, onFile){
+    dropEl.addEventListener('click', () => inputEl.click());
+    dropEl.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); inputEl.click(); }
+    });
+    inputEl.addEventListener('change', () => {
+      if (inputEl.files && inputEl.files[0]) onFile(inputEl.files[0]);
+    });
+    ['dragenter','dragover'].forEach(evt =>
+      dropEl.addEventListener(evt, e => { e.preventDefault(); dropEl.classList.add('drag'); }));
+    ['dragleave','drop'].forEach(evt =>
+      dropEl.addEventListener(evt, e => { e.preventDefault(); dropEl.classList.remove('drag'); }));
+    dropEl.addEventListener('drop', e => {
+      const f = e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f) onFile(f);
+    });
+  }
+
+  function readWorkbook(file){
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        try{
+          const data = new Uint8Array(reader.result);
+          const wb = XLSX.read(data, { type: 'array', cellDates: false });
+          resolve(wb);
+        } catch(err){ reject(err); }
+      };
+      reader.onerror = () => reject(reader.error);
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
+  function updateGradeEnabled(){
+    gradeBtn.disabled = !(keyWorkbook && subWorkbook);
+  }
+
+  wireDrop(dropKey, fileKey, async file => {
+    nameKey.textContent = file.name;
+    setStatus('');
+    try{ keyWorkbook = await readWorkbook(file); }
+    catch(err){ keyWorkbook = null; setStatus('Could not read the answer key file — is it a valid .xlsx?', true); }
+    updateGradeEnabled();
+  });
+
+  wireDrop(dropSub, fileSub, async file => {
+    nameSub.textContent = file.name;
+    setStatus('');
+    try{ subWorkbook = await readWorkbook(file); }
+    catch(err){ subWorkbook = null; setStatus('Could not read the submission file — is it a valid .xlsx?', true); }
+    updateGradeEnabled();
+  });
+
+  function setStatus(msg, isErr){
+    statusLine.textContent = msg || '';
+    statusLine.classList.toggle('err', !!isErr);
+  }
+
+  // ---- grid extraction ----
+  function sheetToGrid(ws){
+    return XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true, blankrows: true });
+  }
+
+  function isBlank(v){ return v === null || v === undefined || v === ''; }
+
+  function cellsMatch(expected, actual, tolerance){
+    const eBlank = isBlank(expected), aBlank = isBlank(actual);
+    if (eBlank || aBlank) return eBlank && aBlank;
+    if (typeof expected === 'number' && typeof actual === 'number'){
+      if (tolerance > 0) return Math.abs(expected - actual) <= tolerance;
+      return expected === actual;
+    }
+    return String(expected) === String(actual);
+  }
+
+  function rowMatches(keyRow, subRow, tolerance){
+    for (let c = 0; c < keyRow.length; c++){
+      const expected = keyRow[c] === undefined ? null : keyRow[c];
+      const actual = (subRow && subRow[c] !== undefined) ? subRow[c] : null;
+      if (!cellsMatch(expected, actual, tolerance)) return false;
+    }
+    return true;
+  }
+
+  // strict, position-sensitive cell-by-cell comparison (original behavior)
+  function compareSheetPositional(keyGrid, subGrid, tolerance){
+    let total = 0, correct = 0;
+    const mismatches = [];
+    for (let r = 0; r < keyGrid.length; r++){
+      const keyRow = keyGrid[r] || [];
+      const subRow = subGrid[r] || [];
+      for (let c = 0; c < keyRow.length; c++){
+        total++;
+        const expected = keyRow[c] === undefined ? null : keyRow[c];
+        const actual = subRow[c] === undefined ? null : subRow[c];
+        if (cellsMatch(expected, actual, tolerance)){
+          correct++;
+        } else if (mismatches.length < 50){
+          mismatches.push({ kind:'cell', row: r + 1, col: c + 1,
+            expected: isBlank(expected) ? null : expected,
+            actual: isBlank(actual) ? null : actual });
+        }
+      }
+    }
+    return { total_cells: total, correct_cells: correct, match_ratio: total ? correct/total : 1,
+      mismatches, mismatch_count: total - correct };
+  }
+
+  // order-independent: each expected row just needs to exist somewhere (once) in the submission
+  function compareSheetUnordered(keyGrid, subGrid, tolerance){
+    const used = new Array(subGrid.length).fill(false);
+    let total = 0, correct = 0;
+    const mismatches = [];
+
+    for (let r = 0; r < keyGrid.length; r++){
+      const keyRow = keyGrid[r] || [];
+      total += keyRow.length;
+      let matchedAt = -1;
+      for (let s = 0; s < subGrid.length; s++){
+        if (used[s]) continue;
+        if (rowMatches(keyRow, subGrid[s], tolerance)){ matchedAt = s; break; }
+      }
+      if (matchedAt !== -1){
+        used[matchedAt] = true;
+        correct += keyRow.length;
+      } else if (mismatches.length < 50){
+        mismatches.push({ kind:'row', row: r + 1,
+          expected_row: keyRow.map(v => isBlank(v) ? null : v) });
+      }
+    }
+    return { total_cells: total, correct_cells: correct, match_ratio: total ? correct/total : 1,
+      mismatches, mismatch_count: total - correct };
+  }
+
+  function compareSheet(keyGrid, subGrid, tolerance, ignoreRowOrder){
+    return ignoreRowOrder
+      ? compareSheetUnordered(keyGrid, subGrid, tolerance)
+      : compareSheetPositional(keyGrid, subGrid, tolerance);
+  }
+
+  function sheetCellCount(grid){
+    return grid.reduce((s, row) => s + row.length, 0);
+  }
+
+  function compareWorkbooks(keyWb, subWb, opts){
+    const { tolerance, penalizeExtra, ignoreSheetNames, ignoreRowOrder } = opts;
+    const perSheet = {};
+    const missingSheets = [];
+    const extraSheets = [];
+    let totalCells = 0, totalCorrect = 0;
+
+    if (ignoreSheetNames){
+      const n = keyWb.SheetNames.length;
+      for (let i = 0; i < n; i++){
+        const keyName = keyWb.SheetNames[i];
+        const subName = subWb.SheetNames[i];
+        const label = 'Sheet ' + (i + 1);
+        const keyGrid = sheetToGrid(keyWb.Sheets[keyName]);
+        if (subName === undefined){
+          missingSheets.push(label);
+          const nCells = sheetCellCount(keyGrid);
+          perSheet[label] = { total_cells:nCells, correct_cells:0, match_ratio:0,
+            mismatches:[], mismatch_count:nCells, status:'MISSING SHEET',
+            keyName, subName:null };
+          totalCells += nCells;
+          continue;
+        }
+        const subGrid = sheetToGrid(subWb.Sheets[subName]);
+        const r = compareSheet(keyGrid, subGrid, tolerance, ignoreRowOrder);
+        r.status = 'OK';
+        r.keyName = keyName;
+        r.subName = subName;
+        perSheet[label] = r;
+        totalCells += r.total_cells;
+        totalCorrect += r.correct_cells;
+      }
+      if (penalizeExtra && subWb.SheetNames.length > n){
+        for (let j = n; j < subWb.SheetNames.length; j++){
+          const subName = subWb.SheetNames[j];
+          const label = 'Sheet ' + (j + 1);
+          extraSheets.push(label);
+          const grid = sheetToGrid(subWb.Sheets[subName]);
+          const nCells = sheetCellCount(grid);
+          totalCells += nCells;
+          perSheet[label] = { total_cells:nCells, correct_cells:0, match_ratio:0,
+            mismatches:[], mismatch_count:nCells, status:'UNEXPECTED EXTRA SHEET',
+            keyName:null, subName };
+        }
+      }
+    } else {
+      const keyNames = keyWb.SheetNames;
+      const subNames = new Set(subWb.SheetNames);
+      keyNames.forEach(name => {
+        const keyGrid = sheetToGrid(keyWb.Sheets[name]);
+        if (!subNames.has(name)){
+          missingSheets.push(name);
+          const nCells = sheetCellCount(keyGrid);
+          perSheet[name] = { total_cells:nCells, correct_cells:0, match_ratio:0,
+            mismatches:[], mismatch_count:nCells, status:'MISSING SHEET',
+            keyName:name, subName:null };
+          totalCells += nCells;
+          return;
+        }
+        const subGrid = sheetToGrid(subWb.Sheets[name]);
+        const r = compareSheet(keyGrid, subGrid, tolerance, ignoreRowOrder);
+        r.status = 'OK';
+        r.keyName = name;
+        r.subName = name;
+        perSheet[name] = r;
+        totalCells += r.total_cells;
+        totalCorrect += r.correct_cells;
+      });
+      if (penalizeExtra){
+        subWb.SheetNames.filter(n => keyNames.indexOf(n) === -1).forEach(name => {
+          extraSheets.push(name);
+          const grid = sheetToGrid(subWb.Sheets[name]);
+          const nCells = sheetCellCount(grid);
+          totalCells += nCells;
+          perSheet[name] = { total_cells:nCells, correct_cells:0, match_ratio:0,
+            mismatches:[], mismatch_count:nCells, status:'UNEXPECTED EXTRA SHEET',
+            keyName:null, subName:name };
+        });
+      }
+    }
+
+    return {
+      missing_sheets: missingSheets,
+      extra_sheets: extraSheets,
+      per_sheet: perSheet,
+      overall_match_ratio: totalCells ? totalCorrect / totalCells : 1,
+      total_cells: totalCells,
+      total_correct: totalCorrect
+    };
+  }
+
+  function bucketScore(matchRatio, missingSheets){
+    if (missingSheets.length){
+      if (matchRatio >= 0.90) return 50;
+      if (matchRatio >= 0.40) return 25;
+      return 0;
+    }
+    if (matchRatio >= 0.999) return 100;
+    if (matchRatio >= 0.90) return 75;
+    if (matchRatio >= 0.70) return 50;
+    if (matchRatio >= 0.40) return 25;
+    return 0;
+  }
+
+  function fmtVal(v){ return (v === null || v === undefined) ? '(blank)' : String(v); }
+  function fmtRow(arr){ return '[' + arr.map(fmtVal).join(', ') + ']'; }
+
+  function sheetSubLabel(s){
+    if (s.keyName === s.subName) return '';
+    if (s.keyName && s.subName) return 'key: "' + s.keyName + '" · submission: "' + s.subName + '"';
+    if (s.keyName && !s.subName) return 'key: "' + s.keyName + '" · not found in submission';
+    if (!s.keyName && s.subName) return 'submission: "' + s.subName + '" · not expected';
+    return '';
+  }
+
+  function renderResults(cmp, score, opts){
+    results.classList.remove('hidden');
+
+    const stamp = document.getElementById('stamp');
+    stamp.className = 'stamp score-' + score;
+    stamp.style.animation = 'none';
+    void stamp.offsetWidth;
+    stamp.style.animation = '';
+
+    document.getElementById('scoreNum').textContent = score;
+    document.getElementById('scoreHeadline').textContent =
+      score === 100 ? 'Full match' : score === 0 ? 'No credit' : 'Partial match';
+    document.getElementById('scoreRatio').textContent =
+      (cmp.overall_match_ratio * 100).toFixed(2) + '% of expected cells matched exactly';
+    document.getElementById('scoreModes').textContent =
+      'Sheets matched by ' + (opts.ignoreSheetNames ? 'position (names ignored)' : 'name') +
+      ' · Rows compared ' + (opts.ignoreRowOrder ? 'as unordered records' : 'in order') +
+      (opts.tolerance > 0 ? ' · numeric tolerance ' + opts.tolerance : '');
+
+    const flags = document.getElementById('flags');
+    flags.innerHTML = '';
+    if (cmp.missing_sheets.length){
+      const li = document.createElement('li');
+      li.textContent = 'Missing sheet(s): ' + cmp.missing_sheets.join(', ');
+      flags.appendChild(li);
+    }
+    if (cmp.extra_sheets.length){
+      const li = document.createElement('li');
+      li.textContent = 'Unexpected extra sheet(s): ' + cmp.extra_sheets.join(', ');
+      flags.appendChild(li);
+    }
+
+    const body = document.getElementById('breakdownBody');
+    body.innerHTML = '';
+    Object.keys(cmp.per_sheet).forEach(label => {
+      const s = cmp.per_sheet[label];
+      const pct = (s.match_ratio * 100).toFixed(1) + '%';
+      const sub = sheetSubLabel(s);
+      const row = document.createElement('tr');
+      row.className = 'sheet-row';
+      row.innerHTML =
+        '<td><span class="caret">&#9656;</span>' + label + (sub ? '<span class="sheet-sub">' + sub + '</span>' : '') + '</td>' +
+        '<td class="num">' + s.correct_cells + ' / ' + s.total_cells + '</td>' +
+        '<td class="num">' + pct + '</td>' +
+        '<td><span class="status-pill ' + (s.status === 'OK' ? 'status-ok' : 'status-bad') + '">' + s.status + '</span></td>';
+
+      const detailRow = document.createElement('tr');
+      detailRow.className = 'mismatch-row hidden';
+      const wrap = document.createElement('td');
+      wrap.colSpan = 4;
+      const inner = document.createElement('div');
+      inner.className = 'mismatch-wrap';
+      if (s.mismatches.length === 0){
+        inner.innerHTML = '<span>No mismatches.</span>';
+      } else {
+        const ul = document.createElement('ul');
+        s.mismatches.forEach(m => {
+          const li = document.createElement('li');
+          if (m.kind === 'row'){
+            li.textContent = 'row ' + m.row + ' (from key): no matching row found in submission — expected ' + fmtRow(m.expected_row);
+          } else {
+            li.textContent = 'row ' + m.row + ', col ' + m.col + ' — expected ' + fmtVal(m.expected) + ', got ' + fmtVal(m.actual);
+          }
+          ul.appendChild(li);
+        });
+        inner.appendChild(ul);
+        if (s.mismatch_count > s.mismatches.length){
+          const more = document.createElement('div');
+          more.className = 'more';
+          more.textContent = '...and ' + (s.mismatch_count - s.mismatches.length) + ' more mismatched cell(s)';
+          inner.appendChild(more);
+        }
+      }
+      wrap.appendChild(inner);
+      detailRow.appendChild(wrap);
+
+      row.addEventListener('click', () => {
+        row.classList.toggle('open');
+        detailRow.classList.toggle('hidden');
+      });
+
+      body.appendChild(row);
+      body.appendChild(detailRow);
+    });
+
+    const text = buildTextReport(cmp, score, opts);
+    const blob = new Blob([text], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const link = document.getElementById('downloadReport');
+    link.href = url;
+    link.setAttribute('download', 'grading_report.txt');
+  }
+
+  function buildTextReport(cmp, score, opts){
+    const lines = [];
+    const rule = '='.repeat(50);
+    lines.push('ANSWER KEY GRADING REPORT');
+    lines.push(rule);
+    lines.push('Score: ' + score + ' / 100');
+    lines.push('Overall match: ' + (cmp.overall_match_ratio * 100).toFixed(2) + '% (' +
+      cmp.total_correct + ' / ' + cmp.total_cells + ' expected cells)');
+    lines.push('Sheet matching: ' + (opts.ignoreSheetNames ? 'by position (sheet names ignored)' : 'by name'));
+    lines.push('Row order: ' + (opts.ignoreRowOrder ? 'ignored (rows matched as unordered records)' : 'exact (position matters)'));
+    lines.push('Numeric tolerance: ' + opts.tolerance);
+    lines.push('');
+
+    if (cmp.missing_sheets.length){
+      lines.push('Missing sheet(s): ' + cmp.missing_sheets.join(', '));
+    }
+    if (cmp.extra_sheets.length){
+      lines.push('Unexpected extra sheet(s): ' + cmp.extra_sheets.join(', '));
+    }
+    if (cmp.missing_sheets.length || cmp.extra_sheets.length) lines.push('');
+
+    Object.keys(cmp.per_sheet).forEach(label => {
+      const s = cmp.per_sheet[label];
+      const sub = sheetSubLabel(s);
+      lines.push('-'.repeat(50));
+      lines.push('Sheet: ' + label + (sub ? '  (' + sub + ')' : ''));
+      lines.push('Status: ' + s.status);
+      lines.push('Correct: ' + s.correct_cells + ' / ' + s.total_cells + ' cells (' +
+        (s.match_ratio * 100).toFixed(1) + '%)');
+      if (s.mismatches.length){
+        lines.push('Mismatches:');
+        s.mismatches.forEach(m => {
+          if (m.kind === 'row'){
+            lines.push('  row ' + m.row + ' (from key): no matching row found in submission — expected ' + fmtRow(m.expected_row));
+          } else {
+            lines.push('  row ' + m.row + ', col ' + m.col + ': expected ' + fmtVal(m.expected) + ', got ' + fmtVal(m.actual));
+          }
+        });
+        if (s.mismatch_count > s.mismatches.length){
+          lines.push('  ...and ' + (s.mismatch_count - s.mismatches.length) + ' more mismatched cell(s)');
+        }
+      } else {
+        lines.push('Mismatches: none');
+      }
+      lines.push('');
+    });
+
+    return lines.join('\n');
+  }
+
+  gradeBtn.addEventListener('click', () => {
+    if (!keyWorkbook || !subWorkbook) return;
+    setStatus('');
+    const opts = {
+      tolerance: parseFloat(document.getElementById('tolerance').value) || 0,
+      penalizeExtra: document.getElementById('penalizeExtra').checked,
+      ignoreSheetNames: document.getElementById('ignoreSheetNames').checked,
+      ignoreRowOrder: document.getElementById('ignoreRowOrder').checked
+    };
+    try{
+      const cmp = compareWorkbooks(keyWorkbook, subWorkbook, opts);
+      const score = bucketScore(cmp.overall_match_ratio, cmp.missing_sheets);
+      renderResults(cmp, score, opts);
+    } catch(err){
+      setStatus('Something went wrong while comparing the files: ' + err.message, true);
+    }
+  });
+})();
+</script>
+</body>
+</html>
