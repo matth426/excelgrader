@@ -127,6 +127,7 @@
     background:var(--paper-raised);
     color:var(--ink);
   }
+  .opt-field input#maxScore{ width:84px; }
   .opt-field input[type="number"]:focus,
   .drop:focus-within{
     outline:2px solid var(--focus);
@@ -138,6 +139,11 @@
     flex:none;
   }
   .opt-row{ display:flex; flex-wrap:wrap; gap:20px; }
+  .opt-note{
+    font-size:12px;
+    color:var(--ink-soft);
+    font-style:italic;
+  }
 
   button.grade-btn{
     font-family:'Source Serif 4', Georgia, serif;
@@ -186,6 +192,7 @@
     border:3px solid currentColor;
     border-radius:50%;
     display:flex;
+    flex-direction:column;
     align-items:center;
     justify-content:center;
     flex:none;
@@ -200,6 +207,16 @@
     font-family:'IBM Plex Mono', monospace;
     font-weight:600;
     font-size:34px;
+    line-height:1.05;
+  }
+  .stamp .num.len-4{ font-size:28px; }
+  .stamp .num.len-5{ font-size:23px; }
+  .stamp .num.len-6{ font-size:20px; }
+  .stamp .outof{
+    font-family:'IBM Plex Mono', monospace;
+    font-size:11px;
+    opacity:.75;
+    margin-top:1px;
   }
 
   .score-100{ color:var(--sage); }
@@ -217,6 +234,12 @@
     font-family:'IBM Plex Mono', monospace;
     font-size:13.5px;
     color:var(--ink-soft);
+  }
+  .score-meta .calc{
+    font-family:'IBM Plex Mono', monospace;
+    font-size:13px;
+    color:var(--ink);
+    margin-top:4px;
   }
   .score-meta .modes{
     font-size:12px;
@@ -348,6 +371,13 @@
   <div class="options">
     <div class="opt-row">
       <div class="opt-field">
+        <label for="maxScore">Max score for this activity</label>
+        <input type="number" id="maxScore" value="100" min="0" step="0.5">
+      </div>
+      <span class="opt-note">Band percentage &times; max score. e.g. 50% band &times; 30 = 15</span>
+    </div>
+    <div class="opt-row">
+      <div class="opt-field">
         <label for="tolerance">Numeric tolerance</label>
         <input type="number" id="tolerance" value="0" min="0" step="0.001">
       </div>
@@ -375,10 +405,14 @@
 
   <div id="results" class="hidden">
     <div class="score-row">
-      <div class="stamp" id="stamp"><span class="num" id="scoreNum">0</span></div>
+      <div class="stamp" id="stamp">
+        <span class="num" id="scoreNum">0</span>
+        <span class="outof" id="scoreOutOf"></span>
+      </div>
       <div class="score-meta">
         <h2 id="scoreHeadline">Score</h2>
         <div class="ratio" id="scoreRatio"></div>
+        <div class="calc" id="scoreCalc"></div>
         <div class="modes" id="scoreModes"></div>
       </div>
     </div>
@@ -668,6 +702,19 @@
     return 0;
   }
 
+  // Scale the 0/25/50/75/100 band onto the teacher's max score.
+  // e.g. band 50 with maxScore 30 -> 0.50 * 30 = 15
+  function scaleScore(band, maxScore){
+    return (band / 100) * maxScore;
+  }
+
+  // Trim trailing zeros so 15.00 shows as 15 but 12.75 stays 12.75
+  function fmtScore(n){
+    if (!isFinite(n)) return '0';
+    const rounded = Math.round(n * 100) / 100;
+    return String(parseFloat(rounded.toFixed(2)));
+  }
+
   function fmtVal(v){ return (v === null || v === undefined) ? '(blank)' : String(v); }
   function fmtRow(arr){ return '[' + arr.map(fmtVal).join(', ') + ']'; }
 
@@ -679,20 +726,32 @@
     return '';
   }
 
-  function renderResults(cmp, score, opts){
+  function renderResults(cmp, band, opts){
     results.classList.remove('hidden');
 
+    const maxScore = opts.maxScore;
+    const scaled = scaleScore(band, maxScore);
+    const scaledText = fmtScore(scaled);
+    const isDefaultMax = Math.abs(maxScore - 100) < 1e-9;
+
     const stamp = document.getElementById('stamp');
-    stamp.className = 'stamp score-' + score;
+    stamp.className = 'stamp score-' + band;
     stamp.style.animation = 'none';
     void stamp.offsetWidth;
     stamp.style.animation = '';
 
-    document.getElementById('scoreNum').textContent = score;
+    const numEl = document.getElementById('scoreNum');
+    numEl.textContent = scaledText;
+    numEl.className = 'num' + (scaledText.length >= 4 ? ' len-' + Math.min(scaledText.length, 6) : '');
+    document.getElementById('scoreOutOf').textContent =
+      isDefaultMax ? '' : '/ ' + fmtScore(maxScore);
+
     document.getElementById('scoreHeadline').textContent =
-      score === 100 ? 'Full match' : score === 0 ? 'No credit' : 'Partial match';
+      band === 100 ? 'Full match' : band === 0 ? 'No credit' : 'Partial match';
     document.getElementById('scoreRatio').textContent =
       (cmp.overall_match_ratio * 100).toFixed(2) + '% of expected cells matched exactly';
+    document.getElementById('scoreCalc').textContent =
+      band + '% band × ' + fmtScore(maxScore) + ' max = ' + scaledText + ' / ' + fmtScore(maxScore);
     document.getElementById('scoreModes').textContent =
       'Sheets matched by ' + (opts.ignoreSheetNames ? 'position (names ignored)' : 'name') +
       ' · Rows compared ' + (opts.ignoreRowOrder ? 'as unordered records' : 'in order') +
@@ -764,7 +823,7 @@
       body.appendChild(detailRow);
     });
 
-    const text = buildTextReport(cmp, score, opts);
+    const text = buildTextReport(cmp, band, opts);
     const blob = new Blob([text], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const link = document.getElementById('downloadReport');
@@ -772,12 +831,16 @@
     link.setAttribute('download', 'grading_report.txt');
   }
 
-  function buildTextReport(cmp, score, opts){
+  function buildTextReport(cmp, band, opts){
     const lines = [];
     const rule = '='.repeat(50);
+    const maxScore = opts.maxScore;
+    const scaled = scaleScore(band, maxScore);
     lines.push('ANSWER KEY GRADING REPORT');
     lines.push(rule);
-    lines.push('Score: ' + score + ' / 100');
+    lines.push('SCORE: ' + fmtScore(scaled) + ' / ' + fmtScore(maxScore));
+    lines.push('Band: ' + band + '% (of 0 / 25 / 50 / 75 / 100)');
+    lines.push('Calculation: ' + band + '% × ' + fmtScore(maxScore) + ' = ' + fmtScore(scaled));
     lines.push('Overall match: ' + (cmp.overall_match_ratio * 100).toFixed(2) + '% (' +
       cmp.total_correct + ' / ' + cmp.total_cells + ' expected cells)');
     lines.push('Sheet matching: ' + (opts.ignoreSheetNames ? 'by position (sheet names ignored)' : 'by name'));
@@ -825,7 +888,15 @@
   gradeBtn.addEventListener('click', () => {
     if (!keyWorkbook || !subWorkbook) return;
     setStatus('');
+
+    const rawMax = parseFloat(document.getElementById('maxScore').value);
+    if (!isFinite(rawMax) || rawMax <= 0){
+      setStatus('Enter a max score greater than 0 before grading.', true);
+      return;
+    }
+
     const opts = {
+      maxScore: rawMax,
       tolerance: parseFloat(document.getElementById('tolerance').value) || 0,
       penalizeExtra: document.getElementById('penalizeExtra').checked,
       ignoreSheetNames: document.getElementById('ignoreSheetNames').checked,
@@ -833,8 +904,8 @@
     };
     try{
       const cmp = compareWorkbooks(keyWorkbook, subWorkbook, opts);
-      const score = bucketScore(cmp.overall_match_ratio, cmp.missing_sheets);
-      renderResults(cmp, score, opts);
+      const band = bucketScore(cmp.overall_match_ratio, cmp.missing_sheets);
+      renderResults(cmp, band, opts);
     } catch(err){
       setStatus('Something went wrong while comparing the files: ' + err.message, true);
     }
