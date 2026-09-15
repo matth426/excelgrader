@@ -689,17 +689,21 @@
     };
   }
 
+  // Band thresholds:
+  //   100  -> exactly 100% of expected cells match
+  //    75  -> more than 75%, but short of a perfect match
+  //    50  -> more than 50%, up to and including 75%
+  //    25  -> at least 25%, up to and including 50%
+  //     0  -> below 25%
+  // Missing sheets need no special case: their cells are counted as
+  // expected-but-wrong, which drags the ratio down and makes a perfect
+  // 100 unreachable on its own.
   function bucketScore(matchRatio, missingSheets){
-    if (missingSheets.length){
-      if (matchRatio >= 0.90) return 50;
-      if (matchRatio >= 0.40) return 25;
-      return 0;
-    }
-    if (matchRatio >= 0.999) return 100;
-    if (matchRatio >= 0.90) return 75;
-    if (matchRatio >= 0.70) return 50;
-    if (matchRatio >= 0.40) return 25;
-    return 0;
+    if (matchRatio >= 1 - 1e-9) return 100;
+    if (matchRatio < 0.25) return 0;
+    if (matchRatio <= 0.50) return 25;
+    if (matchRatio <= 0.75) return 50;
+    return 75;
   }
 
   // Scale the 0/25/50/75/100 band onto the teacher's max score.
