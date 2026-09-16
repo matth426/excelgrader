@@ -335,19 +335,28 @@
   .download-row{
     margin-top:24px;
   }
-  .download-row a{
-    font-size:13.5px;
+  button.download-btn{
+    font-family:'Source Serif 4', Georgia, serif;
+    font-weight:600;
+    font-size:14px;
+    background:transparent;
     color:var(--teal-dark);
-    text-decoration:none;
-    border-bottom:1px solid var(--teal-dark);
+    border:1px solid var(--teal-dark);
+    padding:10px 20px;
+    cursor:pointer;
+    transition:background .15s ease, color .15s ease;
   }
-  .download-row a:hover{ color:var(--teal); border-color:var(--teal); }
+  button.download-btn:hover{ background:var(--teal-dark); color:#fff; }
+  button.download-btn:focus-visible{
+    outline:2px solid var(--focus);
+    outline-offset:3px;
+  }
 </style>
 </head>
 <body>
 <div class="page">
   <h1>Answer Key Grader</h1>
-  <p class="lede">Load an answer key and a submission. Every expected cell is checked against the submission — the comparison is exact by default, so a stray space or a rounded number counts as wrong unless you allow for it below.</p>
+  <p class="lede">Load an answer key and a submission. Every expected cell is checked against the submission — the comparison is exact by default, so a stray space or a rounded number counts as wrong unless you allow for it below. Sheet order and row order never matter; content is matched wherever it appears.</p>
 
   <div class="slots">
     <div class="slot">
@@ -374,7 +383,7 @@
         <label for="maxScore">Max score for this activity</label>
         <input type="number" id="maxScore" value="100" min="0" step="0.5">
       </div>
-      <span class="opt-note">Band percentage &times; max score. e.g. 50% band &times; 30 = 15</span>
+      <span class="opt-note">Score = match % &times; max score. e.g. 87.3% match &times; 30 = 26.19</span>
     </div>
     <div class="opt-row">
       <div class="opt-field">
@@ -389,13 +398,7 @@
     <div class="opt-row">
       <div class="opt-field">
         <input type="checkbox" id="ignoreSheetNames">
-        <label for="ignoreSheetNames">Ignore sheet names — match sheets by their order in the file instead</label>
-      </div>
-    </div>
-    <div class="opt-row">
-      <div class="opt-field">
-        <input type="checkbox" id="ignoreRowOrder">
-        <label for="ignoreRowOrder">Ignore row order — a row counts as correct if it exists anywhere in the sheet</label>
+        <label for="ignoreSheetNames">Ignore sheet names — match sheets by content instead of by name</label>
       </div>
     </div>
   </div>
@@ -432,7 +435,7 @@
     </table>
 
     <div class="download-row">
-      <a href="#" id="downloadReport">Download full report (.txt)</a>
+      <button class="download-btn" id="downloadReport" type="button">Download full report (.txt)</button>
     </div>
   </div>
 </div>
@@ -443,6 +446,7 @@
 
   let keyWorkbook = null;
   let subWorkbook = null;
+  let lastReportText = '';
 
   const fileKey = document.getElementById('fileKey');
   const fileSub = document.getElementById('fileSub');
@@ -529,26 +533,68 @@
     return String(expected) === String(actual);
   }
 
-  function rowMatches(keyRow, subRow, tolerance){
+  // Number of cells in keyRow (only the columns the key defines) that match
+  // the corresponding cells in subRow. Used to score candidate row pairings.
+  function rowCellScore(keyRow, subRow, tolerance){
+    let score = 0;
     for (let c = 0; c < keyRow.length; c++){
       const expected = keyRow[c] === undefined ? null : keyRow[c];
       const actual = (subRow && subRow[c] !== undefined) ? subRow[c] : null;
-      if (!cellsMatch(expected, actual, tolerance)) return false;
+      if (cellsMatch(expected, actual, tolerance)) score++;
     }
-    return true;
+    return score;
   }
 
-  // strict, position-sensitive cell-by-cell comparison (original behavior)
-  function compareSheetPositional(keyGrid, subGrid, tolerance){
+  function sheetCellCount(grid){
+    return grid.reduce((s, row) => s + row.length, 0);
+  }
+
+  // Order-independent, partial-credit comparison. Every key row is paired
+  // with whichever unused submission row shares the most matching cells —
+  // a greedy best-fit assignment over all key×submission row pairs, mirroring
+  // the sheet-level pairing below. This keeps row position irrelevant while
+  // still grading cell-by-cell: a row with one wrong answer among many loses
+  // credit for just that one cell, not the whole row.
+  function compareSheet(keyGrid, subGrid, tolerance){
+    const nKey = keyGrid.length, nSub = subGrid.length;
+
+    const pairs = [];
+    for (let i = 0; i < nKey; i++){
+      const keyRow = keyGrid[i] || [];
+      for (let j = 0; j < nSub; j++){
+        pairs.push({ i, j, score: rowCellScore(keyRow, subGrid[j] || [], tolerance) });
+      }
+    }
+    pairs.sort((a, b) => b.score - a.score);
+
+    const usedKey = new Array(nKey).fill(false);
+    const usedSub = new Array(nSub).fill(false);
+    const assignment = new Array(nKey).fill(-1);
+    for (const p of pairs){
+      if (usedKey[p.i] || usedSub[p.j]) continue;
+      usedKey[p.i] = true;
+      usedSub[p.j] = true;
+      assignment[p.i] = p.j;
+    }
+
     let total = 0, correct = 0;
     const mismatches = [];
-    for (let r = 0; r < keyGrid.length; r++){
+
+    for (let r = 0; r < nKey; r++){
       const keyRow = keyGrid[r] || [];
-      const subRow = subGrid[r] || [];
+      total += keyRow.length;
+      const j = assignment[r];
+      if (j === -1){
+        if (mismatches.length < 50){
+          mismatches.push({ kind:'row', row: r + 1,
+            expected_row: keyRow.map(v => isBlank(v) ? null : v) });
+        }
+        continue;
+      }
+      const subRow = subGrid[j] || [];
       for (let c = 0; c < keyRow.length; c++){
-        total++;
         const expected = keyRow[c] === undefined ? null : keyRow[c];
-        const actual = subRow[c] === undefined ? null : subRow[c];
+        const actual = subRow[c] !== undefined ? subRow[c] : null;
         if (cellsMatch(expected, actual, tolerance)){
           correct++;
         } else if (mismatches.length < 50){
@@ -562,81 +608,77 @@
       mismatches, mismatch_count: total - correct };
   }
 
-  // order-independent: each expected row just needs to exist somewhere (once) in the submission
-  function compareSheetUnordered(keyGrid, subGrid, tolerance){
-    const used = new Array(subGrid.length).fill(false);
-    let total = 0, correct = 0;
-    const mismatches = [];
-
-    for (let r = 0; r < keyGrid.length; r++){
-      const keyRow = keyGrid[r] || [];
-      total += keyRow.length;
-      let matchedAt = -1;
-      for (let s = 0; s < subGrid.length; s++){
-        if (used[s]) continue;
-        if (rowMatches(keyRow, subGrid[s], tolerance)){ matchedAt = s; break; }
-      }
-      if (matchedAt !== -1){
-        used[matchedAt] = true;
-        correct += keyRow.length;
-      } else if (mismatches.length < 50){
-        mismatches.push({ kind:'row', row: r + 1,
-          expected_row: keyRow.map(v => isBlank(v) ? null : v) });
+  // When sheet names are ignored, pair each key sheet with whichever unused
+  // submission sheet best matches its content — a greedy best-fit assignment
+  // over all key×submission pairs — so shuffling sheet order in the file
+  // never changes which sheets get paired or the resulting score.
+  function bestFitPairSheets(keyGrids, subGrids, tolerance){
+    const scores = keyGrids.map(kg => subGrids.map(sg => compareSheet(kg, sg, tolerance).match_ratio));
+    const pairs = [];
+    for (let i = 0; i < keyGrids.length; i++){
+      for (let j = 0; j < subGrids.length; j++){
+        pairs.push({ i, j, score: scores[i][j] });
       }
     }
-    return { total_cells: total, correct_cells: correct, match_ratio: total ? correct/total : 1,
-      mismatches, mismatch_count: total - correct };
-  }
+    pairs.sort((a, b) => b.score - a.score);
 
-  function compareSheet(keyGrid, subGrid, tolerance, ignoreRowOrder){
-    return ignoreRowOrder
-      ? compareSheetUnordered(keyGrid, subGrid, tolerance)
-      : compareSheetPositional(keyGrid, subGrid, tolerance);
-  }
+    const usedKey = new Array(keyGrids.length).fill(false);
+    const usedSub = new Array(subGrids.length).fill(false);
+    const assignment = new Array(keyGrids.length).fill(-1);
 
-  function sheetCellCount(grid){
-    return grid.reduce((s, row) => s + row.length, 0);
+    for (const p of pairs){
+      if (usedKey[p.i] || usedSub[p.j]) continue;
+      usedKey[p.i] = true;
+      usedSub[p.j] = true;
+      assignment[p.i] = p.j;
+    }
+    return { assignment, usedSub };
   }
 
   function compareWorkbooks(keyWb, subWb, opts){
-    const { tolerance, penalizeExtra, ignoreSheetNames, ignoreRowOrder } = opts;
+    const { tolerance, penalizeExtra, ignoreSheetNames } = opts;
     const perSheet = {};
     const missingSheets = [];
     const extraSheets = [];
     let totalCells = 0, totalCorrect = 0;
 
     if (ignoreSheetNames){
-      const n = keyWb.SheetNames.length;
-      for (let i = 0; i < n; i++){
-        const keyName = keyWb.SheetNames[i];
-        const subName = subWb.SheetNames[i];
+      const keyNames = keyWb.SheetNames;
+      const subNames = subWb.SheetNames;
+      const keyGrids = keyNames.map(n => sheetToGrid(keyWb.Sheets[n]));
+      const subGrids = subNames.map(n => sheetToGrid(subWb.Sheets[n]));
+
+      const { assignment, usedSub } = bestFitPairSheets(keyGrids, subGrids, tolerance);
+
+      for (let i = 0; i < keyNames.length; i++){
         const label = 'Sheet ' + (i + 1);
-        const keyGrid = sheetToGrid(keyWb.Sheets[keyName]);
-        if (subName === undefined){
+        const keyGrid = keyGrids[i];
+        const subIdx = assignment[i];
+        if (subIdx === -1){
           missingSheets.push(label);
           const nCells = sheetCellCount(keyGrid);
           perSheet[label] = { total_cells:nCells, correct_cells:0, match_ratio:0,
             mismatches:[], mismatch_count:nCells, status:'MISSING SHEET',
-            keyName, subName:null };
+            keyName: keyNames[i], subName:null };
           totalCells += nCells;
           continue;
         }
-        const subGrid = sheetToGrid(subWb.Sheets[subName]);
-        const r = compareSheet(keyGrid, subGrid, tolerance, ignoreRowOrder);
+        const r = compareSheet(keyGrid, subGrids[subIdx], tolerance);
         r.status = 'OK';
-        r.keyName = keyName;
-        r.subName = subName;
+        r.keyName = keyNames[i];
+        r.subName = subNames[subIdx];
         perSheet[label] = r;
         totalCells += r.total_cells;
         totalCorrect += r.correct_cells;
       }
-      if (penalizeExtra && subWb.SheetNames.length > n){
-        for (let j = n; j < subWb.SheetNames.length; j++){
-          const subName = subWb.SheetNames[j];
-          const label = 'Sheet ' + (j + 1);
-          extraSheets.push(label);
-          const grid = sheetToGrid(subWb.Sheets[subName]);
-          const nCells = sheetCellCount(grid);
+
+      if (penalizeExtra){
+        for (let j = 0; j < subNames.length; j++){
+          if (usedSub[j]) continue;
+          const subName = subNames[j];
+          const label = 'Extra: ' + subName;
+          extraSheets.push(subName);
+          const nCells = sheetCellCount(subGrids[j]);
           totalCells += nCells;
           perSheet[label] = { total_cells:nCells, correct_cells:0, match_ratio:0,
             mismatches:[], mismatch_count:nCells, status:'UNEXPECTED EXTRA SHEET',
@@ -658,7 +700,7 @@
           return;
         }
         const subGrid = sheetToGrid(subWb.Sheets[name]);
-        const r = compareSheet(keyGrid, subGrid, tolerance, ignoreRowOrder);
+        const r = compareSheet(keyGrid, subGrid, tolerance);
         r.status = 'OK';
         r.keyName = name;
         r.subName = name;
@@ -689,27 +731,22 @@
     };
   }
 
-  // Band thresholds:
-  //   100  -> exactly 100% of expected cells match
-  //    75  -> more than 75%, but short of a perfect match
-  //    50  -> more than 50%, up to and including 75%
-  //    25  -> at least 25%, up to and including 50%
-  //     0  -> below 25%
-  // Missing sheets need no special case: their cells are counted as
-  // expected-but-wrong, which drags the ratio down and makes a perfect
-  // 100 unreachable on its own.
-  function bucketScore(matchRatio, missingSheets){
-    if (matchRatio >= 1 - 1e-9) return 100;
-    if (matchRatio < 0.25) return 0;
-    if (matchRatio <= 0.50) return 25;
-    if (matchRatio <= 0.75) return 50;
-    return 75;
+  // Purely cosmetic tier for the stamp's outline/number color — a continuous
+  // read on the match ratio. This never feeds back into the actual score,
+  // which is always the direct ratio × max-score calculation below.
+  function stampTier(ratio){
+    if (ratio >= 0.99) return 100;
+    if (ratio >= 0.75) return 75;
+    if (ratio >= 0.50) return 50;
+    if (ratio >= 0.25) return 25;
+    return 0;
   }
 
-  // Scale the 0/25/50/75/100 band onto the teacher's max score.
-  // e.g. band 50 with maxScore 30 -> 0.50 * 30 = 15
-  function scaleScore(band, maxScore){
-    return (band / 100) * maxScore;
+  // Direct linear scoring: no discrete bands. The score is simply the
+  // fraction of expected cells matched, scaled onto the teacher's max score.
+  // e.g. 87.3% match on a 30-point max -> 0.873 * 30 = 26.19
+  function computeScore(matchRatio, maxScore){
+    return matchRatio * maxScore;
   }
 
   // Trim trailing zeros so 15.00 shows as 15 but 12.75 stays 12.75
@@ -730,35 +767,37 @@
     return '';
   }
 
-  function renderResults(cmp, band, opts){
+  function renderResults(cmp, opts){
     results.classList.remove('hidden');
 
     const maxScore = opts.maxScore;
-    const scaled = scaleScore(band, maxScore);
-    const scaledText = fmtScore(scaled);
+    const ratio = cmp.overall_match_ratio;
+    const score = computeScore(ratio, maxScore);
+    const scoreText = fmtScore(score);
     const isDefaultMax = Math.abs(maxScore - 100) < 1e-9;
+    const tier = stampTier(ratio);
 
     const stamp = document.getElementById('stamp');
-    stamp.className = 'stamp score-' + band;
+    stamp.className = 'stamp score-' + tier;
     stamp.style.animation = 'none';
     void stamp.offsetWidth;
     stamp.style.animation = '';
 
     const numEl = document.getElementById('scoreNum');
-    numEl.textContent = scaledText;
-    numEl.className = 'num' + (scaledText.length >= 4 ? ' len-' + Math.min(scaledText.length, 6) : '');
+    numEl.textContent = scoreText;
+    numEl.className = 'num' + (scoreText.length >= 4 ? ' len-' + Math.min(scoreText.length, 6) : '');
     document.getElementById('scoreOutOf').textContent =
       isDefaultMax ? '' : '/ ' + fmtScore(maxScore);
 
     document.getElementById('scoreHeadline').textContent =
-      band === 100 ? 'Full match' : band === 0 ? 'No credit' : 'Partial match';
+      ratio >= 1 - 1e-9 ? 'Full match' : ratio <= 1e-9 ? 'No credit' : 'Partial match';
     document.getElementById('scoreRatio').textContent =
-      (cmp.overall_match_ratio * 100).toFixed(2) + '% of expected cells matched exactly';
+      (ratio * 100).toFixed(2) + '% of expected cells matched exactly';
     document.getElementById('scoreCalc').textContent =
-      band + '% band × ' + fmtScore(maxScore) + ' max = ' + scaledText + ' / ' + fmtScore(maxScore);
+      (ratio * 100).toFixed(2) + '% × ' + fmtScore(maxScore) + ' max = ' + scoreText + ' / ' + fmtScore(maxScore);
     document.getElementById('scoreModes').textContent =
-      'Sheets matched by ' + (opts.ignoreSheetNames ? 'position (names ignored)' : 'name') +
-      ' · Rows compared ' + (opts.ignoreRowOrder ? 'as unordered records' : 'in order') +
+      'Sheets matched by ' + (opts.ignoreSheetNames ? 'content (names ignored)' : 'name') +
+      ' · Rows matched as unordered records' +
       (opts.tolerance > 0 ? ' · numeric tolerance ' + opts.tolerance : '');
 
     const flags = document.getElementById('flags');
@@ -827,28 +866,22 @@
       body.appendChild(detailRow);
     });
 
-    const text = buildTextReport(cmp, band, opts);
-    const blob = new Blob([text], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const link = document.getElementById('downloadReport');
-    link.href = url;
-    link.setAttribute('download', 'grading_report.txt');
+    lastReportText = buildTextReport(cmp, opts, score);
   }
 
-  function buildTextReport(cmp, band, opts){
+  function buildTextReport(cmp, opts, score){
     const lines = [];
     const rule = '='.repeat(50);
     const maxScore = opts.maxScore;
-    const scaled = scaleScore(band, maxScore);
+    const ratio = cmp.overall_match_ratio;
     lines.push('ANSWER KEY GRADING REPORT');
     lines.push(rule);
-    lines.push('SCORE: ' + fmtScore(scaled) + ' / ' + fmtScore(maxScore));
-    lines.push('Band: ' + band + '% (of 0 / 25 / 50 / 75 / 100)');
-    lines.push('Calculation: ' + band + '% × ' + fmtScore(maxScore) + ' = ' + fmtScore(scaled));
-    lines.push('Overall match: ' + (cmp.overall_match_ratio * 100).toFixed(2) + '% (' +
+    lines.push('SCORE: ' + fmtScore(score) + ' / ' + fmtScore(maxScore));
+    lines.push('Calculation: ' + (ratio * 100).toFixed(2) + '% × ' + fmtScore(maxScore) + ' = ' + fmtScore(score));
+    lines.push('Overall match: ' + (ratio * 100).toFixed(2) + '% (' +
       cmp.total_correct + ' / ' + cmp.total_cells + ' expected cells)');
-    lines.push('Sheet matching: ' + (opts.ignoreSheetNames ? 'by position (sheet names ignored)' : 'by name'));
-    lines.push('Row order: ' + (opts.ignoreRowOrder ? 'ignored (rows matched as unordered records)' : 'exact (position matters)'));
+    lines.push('Sheet matching: ' + (opts.ignoreSheetNames ? 'by content (sheet names ignored)' : 'by name'));
+    lines.push('Row order: ignored (rows matched as unordered records)');
     lines.push('Numeric tolerance: ' + opts.tolerance);
     lines.push('');
 
@@ -889,6 +922,19 @@
     return lines.join('\n');
   }
 
+  document.getElementById('downloadReport').addEventListener('click', () => {
+    if (!lastReportText) return;
+    const blob = new Blob([lastReportText], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'grading_report.txt';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+
   gradeBtn.addEventListener('click', () => {
     if (!keyWorkbook || !subWorkbook) return;
     setStatus('');
@@ -903,13 +949,11 @@
       maxScore: rawMax,
       tolerance: parseFloat(document.getElementById('tolerance').value) || 0,
       penalizeExtra: document.getElementById('penalizeExtra').checked,
-      ignoreSheetNames: document.getElementById('ignoreSheetNames').checked,
-      ignoreRowOrder: document.getElementById('ignoreRowOrder').checked
+      ignoreSheetNames: document.getElementById('ignoreSheetNames').checked
     };
     try{
       const cmp = compareWorkbooks(keyWorkbook, subWorkbook, opts);
-      const band = bucketScore(cmp.overall_match_ratio, cmp.missing_sheets);
-      renderResults(cmp, band, opts);
+      renderResults(cmp, opts);
     } catch(err){
       setStatus('Something went wrong while comparing the files: ' + err.message, true);
     }
