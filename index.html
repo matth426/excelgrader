@@ -107,6 +107,67 @@
     word-break:break-all;
   }
 
+  .sheet-picker{
+    border:1px solid var(--rule);
+    background:var(--paper-raised);
+    padding:16px 18px;
+    margin-bottom:20px;
+  }
+  .sheet-picker-head{
+    display:flex;
+    align-items:baseline;
+    justify-content:space-between;
+    gap:12px;
+    margin-bottom:10px;
+  }
+  .sheet-picker-label{
+    font-family:'Source Serif 4', Georgia, serif;
+    font-weight:600;
+    font-size:14px;
+    color:var(--ink);
+  }
+  .sheet-picker-actions{
+    display:flex;
+    gap:12px;
+  }
+  .sheet-picker-actions button{
+    background:none;
+    border:none;
+    padding:0;
+    font-family:'Inter', sans-serif;
+    font-size:12px;
+    color:var(--teal-dark);
+    text-decoration:underline;
+    cursor:pointer;
+  }
+  .sheet-picker-actions button:hover{ color:var(--teal); }
+  .sheet-picker-hint{
+    font-size:13px;
+    color:var(--ink-soft);
+    font-style:italic;
+  }
+  .sheet-picker-list{
+    display:flex;
+    flex-wrap:wrap;
+    gap:10px 20px;
+  }
+  .sheet-picker-item{
+    display:flex;
+    align-items:center;
+    gap:7px;
+    font-size:13.5px;
+    cursor:pointer;
+  }
+  .sheet-picker-item input[type="checkbox"]{
+    width:15px; height:15px;
+    accent-color:var(--teal);
+    flex:none;
+  }
+  .sheet-picker-item .sheet-name{
+    font-family:'IBM Plex Mono', monospace;
+    font-size:12.5px;
+  }
+
   .options{
     display:flex;
     flex-direction:column;
@@ -377,6 +438,18 @@
     </div>
   </div>
 
+  <div class="sheet-picker">
+    <div class="sheet-picker-head">
+      <span class="sheet-picker-label">Sheets to check</span>
+      <div class="sheet-picker-actions hidden" id="pickerActions">
+        <button type="button" id="pickerSelectAll">Select all</button>
+        <button type="button" id="pickerSelectNone">Select none</button>
+      </div>
+    </div>
+    <div class="sheet-picker-hint" id="pickerHint">Load the answer key to choose which of its sheets get graded.</div>
+    <div class="sheet-picker-list" id="pickerList"></div>
+  </div>
+
   <div class="options">
     <div class="opt-row">
       <div class="opt-field">
@@ -447,6 +520,7 @@
   let keyWorkbook = null;
   let subWorkbook = null;
   let lastReportText = '';
+  let selectedKeySheets = new Set(); // names of key sheets currently checked for grading
 
   const fileKey = document.getElementById('fileKey');
   const fileSub = document.getElementById('fileSub');
@@ -457,6 +531,53 @@
   const gradeBtn = document.getElementById('gradeBtn');
   const statusLine = document.getElementById('statusLine');
   const results = document.getElementById('results');
+  const pickerHint = document.getElementById('pickerHint');
+  const pickerList = document.getElementById('pickerList');
+  const pickerActions = document.getElementById('pickerActions');
+
+  // Rebuilds the "sheets to check" checklist from the answer key's own
+  // sheet names. Everything is checked by default; unchecking a sheet
+  // excludes it from grading entirely (its cells aren't counted at all,
+  // and any submission sheet by that name isn't flagged as extra either).
+  function renderSheetPicker(wb){
+    pickerList.innerHTML = '';
+    if (!wb){
+      pickerHint.textContent = 'Load the answer key to choose which of its sheets get graded.';
+      pickerHint.classList.remove('hidden');
+      pickerActions.classList.add('hidden');
+      selectedKeySheets = new Set();
+      return;
+    }
+    pickerHint.classList.add('hidden');
+    pickerActions.classList.remove('hidden');
+    selectedKeySheets = new Set(wb.SheetNames);
+    wb.SheetNames.forEach(name => {
+      const item = document.createElement('label');
+      item.className = 'sheet-picker-item';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = true;
+      cb.addEventListener('change', () => {
+        if (cb.checked) selectedKeySheets.add(name);
+        else selectedKeySheets.delete(name);
+      });
+      const span = document.createElement('span');
+      span.className = 'sheet-name';
+      span.textContent = name;
+      item.appendChild(cb);
+      item.appendChild(span);
+      pickerList.appendChild(item);
+    });
+  }
+
+  document.getElementById('pickerSelectAll').addEventListener('click', () => {
+    pickerList.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = true);
+    if (keyWorkbook) selectedKeySheets = new Set(keyWorkbook.SheetNames);
+  });
+  document.getElementById('pickerSelectNone').addEventListener('click', () => {
+    pickerList.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
+    selectedKeySheets = new Set();
+  });
 
   function wireDrop(dropEl, inputEl, onFile){
     dropEl.addEventListener('click', () => inputEl.click());
@@ -500,6 +621,7 @@
     setStatus('');
     try{ keyWorkbook = await readWorkbook(file); }
     catch(err){ keyWorkbook = null; setStatus('Could not read the answer key file — is it a valid .xlsx?', true); }
+    renderSheetPicker(keyWorkbook);
     updateGradeEnabled();
   });
 
@@ -635,23 +757,36 @@
     return { assignment, usedSub };
   }
 
+  // opts.includeSheets: a Set of key-sheet names to actually grade, or null/
+  // undefined to grade every sheet in the key. Sheets left out are dropped
+  // before any comparison runs — their cells never enter the totals, and a
+  // submission sheet sharing that (excluded) name is not flagged as extra.
   function compareWorkbooks(keyWb, subWb, opts){
-    const { tolerance, penalizeExtra, ignoreSheetNames } = opts;
+    const { tolerance, penalizeExtra, ignoreSheetNames, includeSheets } = opts;
     const perSheet = {};
     const missingSheets = [];
     const extraSheets = [];
+    const skippedSheets = [];
     let totalCells = 0, totalCorrect = 0;
 
+    const allKeyNames = keyWb.SheetNames;
+    const isIncluded = name => !includeSheets || includeSheets.has(name);
+    allKeyNames.forEach(name => { if (!isIncluded(name)) skippedSheets.push(name); });
+
     if (ignoreSheetNames){
-      const keyNames = keyWb.SheetNames;
+      // Original index is kept for the "Sheet N" label so numbering stays
+      // traceable to the source file even when some sheets are skipped.
+      const keyEntries = allKeyNames
+        .map((name, idx) => ({ name, idx }))
+        .filter(e => isIncluded(e.name));
       const subNames = subWb.SheetNames;
-      const keyGrids = keyNames.map(n => sheetToGrid(keyWb.Sheets[n]));
+      const keyGrids = keyEntries.map(e => sheetToGrid(keyWb.Sheets[e.name]));
       const subGrids = subNames.map(n => sheetToGrid(subWb.Sheets[n]));
 
       const { assignment, usedSub } = bestFitPairSheets(keyGrids, subGrids, tolerance);
 
-      for (let i = 0; i < keyNames.length; i++){
-        const label = 'Sheet ' + (i + 1);
+      for (let i = 0; i < keyEntries.length; i++){
+        const label = 'Sheet ' + (keyEntries[i].idx + 1);
         const keyGrid = keyGrids[i];
         const subIdx = assignment[i];
         if (subIdx === -1){
@@ -659,13 +794,13 @@
           const nCells = sheetCellCount(keyGrid);
           perSheet[label] = { total_cells:nCells, correct_cells:0, match_ratio:0,
             mismatches:[], mismatch_count:nCells, status:'MISSING SHEET',
-            keyName: keyNames[i], subName:null };
+            keyName: keyEntries[i].name, subName:null };
           totalCells += nCells;
           continue;
         }
         const r = compareSheet(keyGrid, subGrids[subIdx], tolerance);
         r.status = 'OK';
-        r.keyName = keyNames[i];
+        r.keyName = keyEntries[i].name;
         r.subName = subNames[subIdx];
         perSheet[label] = r;
         totalCells += r.total_cells;
@@ -686,7 +821,7 @@
         }
       }
     } else {
-      const keyNames = keyWb.SheetNames;
+      const keyNames = allKeyNames.filter(isIncluded);
       const subNames = new Set(subWb.SheetNames);
       keyNames.forEach(name => {
         const keyGrid = sheetToGrid(keyWb.Sheets[name]);
@@ -709,7 +844,9 @@
         totalCorrect += r.correct_cells;
       });
       if (penalizeExtra){
-        subWb.SheetNames.filter(n => keyNames.indexOf(n) === -1).forEach(name => {
+        // A submission sheet whose name matches a sheet the teacher chose
+        // to skip is not "extra" — it was expected to exist, just not graded.
+        subWb.SheetNames.filter(n => allKeyNames.indexOf(n) === -1).forEach(name => {
           extraSheets.push(name);
           const grid = sheetToGrid(subWb.Sheets[name]);
           const nCells = sheetCellCount(grid);
@@ -724,6 +861,7 @@
     return {
       missing_sheets: missingSheets,
       extra_sheets: extraSheets,
+      skipped_sheets: skippedSheets,
       per_sheet: perSheet,
       overall_match_ratio: totalCells ? totalCorrect / totalCells : 1,
       total_cells: totalCells,
@@ -798,7 +936,8 @@
     document.getElementById('scoreModes').textContent =
       'Sheets matched by ' + (opts.ignoreSheetNames ? 'content (names ignored)' : 'name') +
       ' · Rows matched as unordered records' +
-      (opts.tolerance > 0 ? ' · numeric tolerance ' + opts.tolerance : '');
+      (opts.tolerance > 0 ? ' · numeric tolerance ' + opts.tolerance : '') +
+      (cmp.skipped_sheets.length ? ' · not graded: ' + cmp.skipped_sheets.join(', ') : '');
 
     const flags = document.getElementById('flags');
     flags.innerHTML = '';
@@ -883,6 +1022,9 @@
     lines.push('Sheet matching: ' + (opts.ignoreSheetNames ? 'by content (sheet names ignored)' : 'by name'));
     lines.push('Row order: ignored (rows matched as unordered records)');
     lines.push('Numeric tolerance: ' + opts.tolerance);
+    if (cmp.skipped_sheets.length){
+      lines.push('Sheets not graded (excluded by teacher): ' + cmp.skipped_sheets.join(', '));
+    }
     lines.push('');
 
     if (cmp.missing_sheets.length){
@@ -945,11 +1087,17 @@
       return;
     }
 
+    if (selectedKeySheets.size === 0){
+      setStatus('Select at least one sheet in "Sheets to check" before grading.', true);
+      return;
+    }
+
     const opts = {
       maxScore: rawMax,
       tolerance: parseFloat(document.getElementById('tolerance').value) || 0,
       penalizeExtra: document.getElementById('penalizeExtra').checked,
-      ignoreSheetNames: document.getElementById('ignoreSheetNames').checked
+      ignoreSheetNames: document.getElementById('ignoreSheetNames').checked,
+      includeSheets: selectedKeySheets
     };
     try{
       const cmp = compareWorkbooks(keyWorkbook, subWorkbook, opts);
